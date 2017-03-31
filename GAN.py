@@ -51,6 +51,7 @@ from chainer import serializers
 import cupy
 from scores import *
 from sklearn.cross_validation import train_test_split
+
 J =14
 n_conv = 5
 n_filters = 8
@@ -62,12 +63,39 @@ size_out_2 = 9
 C = 1e-4
 Nepoch = 400
 batchsize = 256
-nrand = 0
+nrand = 200
 beta = 1.0
 alpha = 0.5
+n_per_sample_val = 2
+use_gpu = 1
 
-use_gpu = 0
-
+def objective_function(model, x_val, y_val, n_per_sample_val, z_monitor_objective_all_val):
+	
+	N_val = x_val.shape[0]
+	start = 0
+	end = 0
+	batchsize = 700
+	loss = 0.0
+	while True:
+		start = end
+		end = min([start+batchsize,N_val])
+		x = chainer.Variable(x_val[start:end,:,:,:].astype(xp.float32))
+		y = chainer.Variable(y_val[start:end,:])
+		
+		#ex = model.fast_sample_depth_image(x)
+		z = chainer.Variable(xp.asarray(z_monitor_objective_all_val[start:end, 0, :]))
+		pred = model(x,z)
+		pred = F.expand_dims(pred, axis = 1)
+		preds = F.concat((pred,))
+		for k in range(n_per_sample_val - 1):
+			z = chainer.Variable(xp.asarray(z_monitor_objective_all_val[start:end, k+1, :]))
+			pred = model(x,z)
+			pred = F.expand_dims(pred, axis = 1)
+			preds = F.concat((preds,pred), axis = 1)
+		loss += model.score(preds,y).data * (end - start)
+		if end == N_val:
+			break
+	return loss / N_val
 
 def bnorm(Z):
 		Z += 1e-20 #small constant for gradient stabilitly
@@ -80,7 +108,7 @@ def bnorm(Z):
 	
 class Generator(chainer.Chain):
     
-    def __init__(self, nz =100):
+    def __init__(self, score):
         super(Generator, self).__init__(
             
            # image network
@@ -100,8 +128,9 @@ class Generator(chainer.Chain):
 
 
         )
+	self.score = score
         #Generator outputs a pose prediction
-    def __call__(self, x):
+    def __call__(self, x, z):
 		#z = chainer.Variable(xp.random.uniform(-1.0, 1.0,
 		#(x.data.shape[0], self.nrand)).astype(xp.float32)) #noise
 		
@@ -110,8 +139,12 @@ class Generator(chainer.Chain):
 		h_image = F.relu(self.conv2(h_image))
 		h_image = F.reshape(h_image, (h_image.data.shape[0], size_out_1*size_out_2*n_filters))
 		
-		image_features = h_image
-		h = h_image
+		d = xp.array(z.data)
+		image_features = xp.array(h_image.data)
+		#i_d = xp.array(image_features.data)
+		#h = Variable(np.concatenate((h_image.data, prediction.data), axis = 1))
+		h = F.concat((image_features, d), axis = 1)
+		#h = h_image
 		#h = F.concat((z,image_features), axis = 1)
 		h = F.relu(self.lin2(h))
 		h = F.relu(self.lin3(h))
@@ -131,7 +164,7 @@ class Discriminator(chainer.Chain):
 			conv1 = L.Convolution2D(n_filters,n_filters,n_conv,stride = 1, pad=0, wscale=0.01*math.sqrt(n_conv*n_conv*n_filters)),
 			conv2 = L.Convolution2D(n_filters,n_filters,n_conv,stride = 1, pad=0, wscale=0.01*math.sqrt(n_conv*n_conv*n_filters)),
 			
-			lin0 = L.Linear(size_out_1*size_out_2*n_filters + nrand + 3 * J, 200, wscale=0.01*math.sqrt(size_out_1*size_out_2*n_filters + 3*J + nrand)),
+			lin0 = L.Linear(size_out_1*size_out_2*n_filters  + 3 * J, 200, wscale=0.01*math.sqrt(size_out_1*size_out_2*n_filters + 3*J )),
 			lin1 = L.Linear(200, 200, wscale=0.01*math.sqrt(200)),
 			lin2 = L.Linear(200, 1, wscale=0.01*math.sqrt(200)),
         )
@@ -145,13 +178,13 @@ class Discriminator(chainer.Chain):
 		
 		#image_features = h_image
 		#default - dropout_ration = 0.5
-		print prediction, prediction.data
+		#print prediction, prediction.data
 		d = xp.array(prediction.data)
 		image_features = xp.array(h_image.data)
 		#i_d = xp.array(image_features.data)
 		#h = Variable(np.concatenate((h_image.data, prediction.data), axis = 1))
 		h = F.concat((image_features, d), axis = 1)
-		print h, type(h), h.shape
+		#print h, type(h), h.shape
 		h = F.relu(self.lin0(h))
 		h = F.relu(self.lin1(h))
 		#h = F.relu(F.Dropout(self.lin0(h)))
@@ -162,11 +195,13 @@ class Discriminator(chainer.Chain):
 
 
 if __name__ == '__main__':
-	gen = Generator()
+	scoring = Score(beta, alpha, n_per_sample_val)
+	gen = Generator(scoring)
 	dis = Discriminator()
 	
 	#loss = Score(beta, alpha, n_per_sample)
 	
+
 	#n_per_sample = 2
 	di = NYUImporter('../../DeepPrior/data/NYU')
 
@@ -197,44 +232,35 @@ if __name__ == '__main__':
 	
 	gen_loss_list=[]
 	dis_loss_list=[]
+	obj_val = xp.zeros((Nepoch))
+	
+	z_monitor_all_val = xp.asarray(np.random.uniform(-1.0, 1.0,
+						(Nval, n_per_sample_val, nrand)).astype(np.float32))
+
 	for epoch in range(Nepoch):
 		sum_dis_loss = xp.float32(0)
 		sum_gen_loss = xp.float32(0)
 		#xp.random.shuffle(train_data)
 		for i in range(0, N, batchsize):
 			input_image = x_train[i:i+batchsize]
-			z = Variable(xp.random.uniform(-1, 1, (batchsize, 1, h, w)).astype(xp.float32))
+			n = input_image.shape[0]
+			z = Variable(xp.random.uniform(-1, 1, (n, nrand)).astype(xp.float32))
 			
-			x = gen(z)
+			x = gen(input_image, z)
 			yl = dis(input_image, x)
-			print x.shape, yl.shape
-			#x - generated, x2 - true distribution. Dis : is this sample fake?
-			#print yl.data
             		d = yl.data
-			#yl_reshape = np.zeros((batchsize,2))
-			#yl_reshape[:,0] = list(d.ravel())
-			#yl_reshape[:,1] = list(1-d.ravel())
-			#yl = Variable(yl_reshape)
             
-			L_gen = F.sigmoid_cross_entropy(yl, Variable(np.zeros((batchsize,1)).astype(np.int32)))
+			L_gen = F.sigmoid_cross_entropy(yl, Variable(np.zeros((n,1)).astype(np.int32)))
 			print "L_gen",  L_gen.data
-			L_dis = F.sigmoid_cross_entropy(yl, Variable(np.ones((batchsize,1)).astype(np.int32)))
+			L_dis = F.sigmoid_cross_entropy(yl, Variable(np.ones((n,1)).astype(np.int32)))
 			print "L_dis", L_dis.data
 			true_pose = y_train[i:i+batchsize] 
 			true_pose = xp.reshape(true_pose, (true_pose.shape[0], 3 * J))                    
 			true_pose = Variable(xp.asarray(true_pose).astype(xp.float32))			
 			yl2 = dis(input_image, true_pose)
-			#d = yl2.data
-			#yl_reshape = np.zeros((batchsize,2))
-			#yl_reshape[:,0] = list(d.ravel())
-			#yl_reshape[:,1] = list(1-d.ravel())
-			#yl2 = Variable(yl_reshape)
 			
 
-			print "l shape", L_dis.data.shape,"yl2 shape",  yl2.data.shape
-			L_dis = F.sigmoid_cross_entropy(yl2, Variable(np.zeros((batchsize,1)).astype(np.int32)))
-			#L_gen.zerograd()
-			#o_gen.cleargrad()
+			L_dis = F.sigmoid_cross_entropy(yl2, Variable(np.zeros((n,1)).astype(np.int32)))
 			o_gen.zero_grads()
 			L_gen.backward()
 			o_gen.update()
@@ -250,10 +276,13 @@ if __name__ == '__main__':
 			curr_batch_dis_loss = L_dis.data
 			sum_dis_loss += curr_batch_dis_loss 
 
-			gen_loss_list.append(curr_batch_gen_loss/batchsize)
-			dis_loss_list.append(curr_batch_dis_loss/batchsize)
+			gen_loss_list.append(curr_batch_gen_loss/n)
+			dis_loss_list.append(curr_batch_dis_loss/n)
 			print "L_gen", L_gen.data
 			print "L_dis", L_dis.data
-			print curr_batch_gen_loss
-			print curr_batch_dis_loss
+		
+			obj_val[epoch] = objective_function(gen, x_val, y_val, n_per_sample_val, z_monitor_all_val)
+			print "obj val", obj_val[epoch]
+			#print curr_batch_gen_loss
+			#print curr_batch_dis_loss
 	print 'epoch end', epoch, sum_gen_loss/N, sum_dis_loss/N
