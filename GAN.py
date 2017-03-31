@@ -156,8 +156,8 @@ class Discriminator(chainer.Chain):
 		h = F.relu(self.lin1(h))
 		#h = F.relu(F.Dropout(self.lin0(h)))
 		#h = F.relu(F.Dropout(self.lin1(h)))
-		h = F.maxout(self.lin2(h), 1)
-		h = F.sigmoid(h)    
+		h = self.lin2(h)
+		#h = F.sigmoid(h)    
 		return h
 
 
@@ -209,42 +209,42 @@ if __name__ == '__main__':
 			yl = dis(input_image, x)
 			print x.shape, yl.shape
 			#x - generated, x2 - true distribution. Dis : is this sample fake?
-			print yl.data
+			#print yl.data
             		d = yl.data
-			yl_reshape = np.zeros((batchsize,2))
-			yl_reshape[:,0] = list(d.ravel())
-			yl_reshape[:,1] = list(1-d.ravel())
-			yl = Variable(yl_reshape)
+			#yl_reshape = np.zeros((batchsize,2))
+			#yl_reshape[:,0] = list(d.ravel())
+			#yl_reshape[:,1] = list(1-d.ravel())
+			#yl = Variable(yl_reshape)
             
-			L_gen = F.softmax_cross_entropy(yl, Variable(np.zeros(batchsize).astype(np.int32)))
-			print L_gen
-			L_dis = F.softmax_cross_entropy(yl, Variable(np.ones(batchsize).astype(np.int32)))
-			
+			L_gen = F.sigmoid_cross_entropy(yl, Variable(np.zeros((batchsize,1)).astype(np.int32)))
+			print "L_gen",  L_gen.data
+			L_dis = F.sigmoid_cross_entropy(yl, Variable(np.ones((batchsize,1)).astype(np.int32)))
+			print "L_dis", L_dis.data
 			true_pose = y_train[i:i+batchsize] 
 			true_pose = xp.reshape(true_pose, (true_pose.shape[0], 3 * J))                    
 			true_pose = Variable(xp.asarray(true_pose).astype(xp.float32))			
 			yl2 = dis(input_image, true_pose)
-
-            		d = yl2.data
-			yl_reshape = np.zeros((batchsize,2))
-			yl_reshape[:,0] = list(d.ravel())
-			yl_reshape[:,1] = list(1-d.ravel())
-			yl2 = Variable(yl_reshape)
+			#d = yl2.data
+			#yl_reshape = np.zeros((batchsize,2))
+			#yl_reshape[:,0] = list(d.ravel())
+			#yl_reshape[:,1] = list(1-d.ravel())
+			#yl2 = Variable(yl_reshape)
 			
 
-			print L_dis.data.dtype, yl2.data.dtype
-			L_dis += F.softmax_cross_entropy(yl2, Variable(np.zeros(batchsize).astype(np.int32)))
-
-			L_gen.zerograd()
+			print "l shape", L_dis.data.shape,"yl2 shape",  yl2.data.shape
+			L_dis = F.sigmoid_cross_entropy(yl2, Variable(np.zeros((batchsize,1)).astype(np.int32)))
+			#L_gen.zerograd()
 			#o_gen.cleargrad()
+			o_gen.zero_grads()
 			L_gen.backward()
 			o_gen.update()
 			
-			L_dis.zerograd()
+			#L_dis.zerograd()
 			#o_dis.cleargrad()
+			o_dis.zero_grads()
 			L_dis.backward()
 			o_dis.update()
-			print "grad:", min(L_gen.grad), max(L_gen.grad)         
+			#print "grad:", min(L_gen.grad), max(L_gen.grad)         
 			curr_batch_gen_loss = L_gen.data 
 			sum_gen_loss += curr_batch_gen_loss
 			curr_batch_dis_loss = L_dis.data
