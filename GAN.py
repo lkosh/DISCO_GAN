@@ -51,7 +51,7 @@ from chainer import serializers
 import cupy
 from scores import *
 from sklearn.cross_validation import train_test_split
-
+from hand_pose import JointPositionExtractor 
 J =14
 n_conv = 5
 n_filters = 8
@@ -67,7 +67,7 @@ nrand = 200
 beta = 1.0
 alpha = 0.5
 n_per_sample_val = 2
-use_gpu = 1
+use_gpu = 0
 
 def objective_function(model, x_val, y_val, n_per_sample_val, z_monitor_objective_all_val):
 	
@@ -196,9 +196,15 @@ class Discriminator(chainer.Chain):
 
 if __name__ == '__main__':
 	scoring = Score(beta, alpha, n_per_sample_val)
+	init = 1
 	gen = Generator(scoring)
 	dis = Discriminator()
-	
+	if init:
+		model = JointPositionExtractor(scoring, nrand, J)
+		serializers.load_npz('TryRelease/model_end.model', model)
+		gen.conv0 = model.conv0
+		gen.conv1 = model.conv1
+		gen.conv2 = model.conv2
 	#loss = Score(beta, alpha, n_per_sample)
 	
 
@@ -242,8 +248,10 @@ if __name__ == '__main__':
 		sum_gen_loss = xp.float32(0)
 		#xp.random.shuffle(train_data)
 		for i in range(0, N, batchsize):
+			#input_image = chainer.Variable(xp.asarray(x_train[i:i+batchsize]).astype(xp.float32))
 			input_image = x_train[i:i+batchsize]
 			n = input_image.shape[0]
+			
 			z = Variable(xp.random.uniform(-1, 1, (n, nrand)).astype(xp.float32))
 			
 			x = gen(input_image, z)
@@ -254,7 +262,8 @@ if __name__ == '__main__':
 			print "L_gen",  L_gen.data
 			L_dis = F.sigmoid_cross_entropy(yl, Variable(np.ones((n,1)).astype(np.int32)))
 			print "L_dis", L_dis.data
-			true_pose = y_train[i:i+batchsize] 
+			#true_pose = chainer.Variable(xp.asarray(y_train[i:i+batchsize]).astype(xp.float32)) 
+			true_pose = y_train[i:i+batchsize]
 			true_pose = xp.reshape(true_pose, (true_pose.shape[0], 3 * J))                    
 			true_pose = Variable(xp.asarray(true_pose).astype(xp.float32))			
 			yl2 = dis(input_image, true_pose)
