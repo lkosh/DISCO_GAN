@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python
 #
 # Keras GAN Implementation
@@ -8,30 +9,6 @@ import os,random
 os.environ["KERAS_BACKEND"] = "theano"
 #os.environ["THEANO_FLAGS"]  = "device=gpu%d,lib.cnmem=0"%(random.randint(0,3))
 import numpy as np
-import theano as th
-import theano.tensor as T
-from keras.utils import np_utils
-import keras.models as models
-from keras.layers import Input,merge
-from keras.layers.core import Reshape,Dense,Dropout,Activation,Flatten,MaxoutDense
-from keras.layers.advanced_activations import LeakyReLU
-from keras.activations import *
-from keras.layers.wrappers import TimeDistributed
-from keras.layers.noise import GaussianNoise
-from keras.layers.convolutional import Convolution2D, MaxPooling2D, ZeroPadding2D, UpSampling2D
-from keras.layers.recurrent import LSTM
-from keras.regularizers import *
-from keras.layers.normalization import *
-from keras.optimizers import *
-from keras.datasets import mnist
-import matplotlib.pyplot as plt
-import seaborn as sns
-import cPickle, random, sys, keras
-from keras.models import Model
-#from IPython import display
-from keras.utils import np_utils
-from tqdm import tqdm
-
 
 import time
 import sys
@@ -61,7 +38,7 @@ n_pixels_2 = 128
 size_out_1 = 9
 size_out_2 = 9
 C = 1e-4
-Nepoch = 400
+Nepoch = 1000
 batchsize = 256
 nrand = 200
 beta = 1.0
@@ -79,8 +56,9 @@ def objective_function(model, x_val, y_val, n_per_sample_val, z_monitor_objectiv
 	while True:
 		start = end
 		end = min([start+batchsize,N_val])
-		x = chainer.Variable(x_val[start:end,:,:,:].astype(xp.float32))
-		y = chainer.Variable(y_val[start:end,:])
+		x = x_val[start:end,:,:,:]
+		#x = chainer.Variable(xp.asarray(x_val[start:end,:,:,:]).astype(xp.float32))
+		y = chainer.Variable(xp.asarray(y_val[start:end,:]))
 		
 		#ex = model.fast_sample_depth_image(x)
 		z = chainer.Variable(xp.asarray(z_monitor_objective_all_val[start:end, 0, :]))
@@ -112,6 +90,7 @@ class Generator(chainer.Chain):
         super(Generator, self).__init__(
             
            # image network
+           
 			
 			conv0 = L.Convolution2D(1, n_filters, n_conv, stride = 1, pad=0, wscale=0.01*math.sqrt(n_conv*n_conv)),
 			conv1 = L.Convolution2D(n_filters,n_filters,n_conv,stride = 1, pad=0, wscale=0.01*math.sqrt(n_conv*n_conv*n_filters)),
@@ -122,9 +101,9 @@ class Generator(chainer.Chain):
 			lin3 = L.Linear(1024, 1024, wscale=0.01*math.sqrt(1024)),
 			lin4 = L.Linear(1024, 3*J, wscale=0.01*math.sqrt(1024)),
 			
-			bn0l = L.BatchNormalization(4*4*512),
-            bn1 = L.BatchNormalization(256),
-            bn2 = L.BatchNormalization(64),
+			bn0 = L.BatchNormalization(size_out_1*size_out_2*n_filters +nrand),
+            bn1 = L.BatchNormalization(1024),
+            bn2 = L.BatchNormalization(1024),
 
 
         )
@@ -133,21 +112,28 @@ class Generator(chainer.Chain):
     def __call__(self, x, z):
 		#z = chainer.Variable(xp.random.uniform(-1.0, 1.0,
 		#(x.data.shape[0], self.nrand)).astype(xp.float32)) #noise
+		x = chainer.Variable(xp.asarray(x).astype(xp.float32))
+
+	#	print type(x.data[0])
+		h_image = F.max_pooling_2d(F.relu(self.conv0(x.data)), ksize = n_pool)
 		
-		h_image = F.max_pooling_2d(F.relu(self.conv0(x)), ksize = n_pool)
 		h_image = F.max_pooling_2d(F.relu(self.conv1(h_image)), ksize = n_pool)
+
 		h_image = F.relu(self.conv2(h_image))
 		h_image = F.reshape(h_image, (h_image.data.shape[0], size_out_1*size_out_2*n_filters))
 		
-		d = xp.array(z.data)
+		d = z #xp.array(z.data)
 		image_features = xp.array(h_image.data)
 		#i_d = xp.array(image_features.data)
 		#h = Variable(np.concatenate((h_image.data, prediction.data), axis = 1))
 		h = F.concat((image_features, d), axis = 1)
 		#h = h_image
 		#h = F.concat((z,image_features), axis = 1)
+		h = self.bn0(h)
 		h = F.relu(self.lin2(h))
+		h = self.bn1(h)
 		h = F.relu(self.lin3(h))
+		h = self.bn2(h)
 		h = F.relu(self.lin4(h))
 		
 		return h
@@ -171,15 +157,17 @@ class Discriminator(chainer.Chain):
         
     def __call__(self, x, prediction, test=False):
         # mattya's implementation does not have bn after c1
-		h_image = F.max_pooling_2d(F.relu(self.conv0(x)), ksize = n_pool)
+		x = chainer.Variable(xp.asarray(x).astype(xp.float32))
+
+	#	print type(x.data[0])
+		h_image = F.max_pooling_2d(F.relu(self.conv0(x.data)), ksize = n_pool)
+		
 		h_image = F.max_pooling_2d(F.relu(self.conv1(h_image)), ksize = n_pool)
+
 		h_image = F.relu(self.conv2(h_image))
 		h_image = F.reshape(h_image, (h_image.data.shape[0], size_out_1*size_out_2*n_filters))
 		
-		#image_features = h_image
-		#default - dropout_ration = 0.5
-		#print prediction, prediction.data
-		d = xp.array(prediction.data)
+		d = xp.asarray(prediction.data) #xp.array(z.data)
 		image_features = xp.array(h_image.data)
 		#i_d = xp.array(image_features.data)
 		#h = Variable(np.concatenate((h_image.data, prediction.data), axis = 1))
@@ -197,6 +185,7 @@ class Discriminator(chainer.Chain):
 if __name__ == '__main__':
 	scoring = Score(beta, alpha, n_per_sample_val)
 	init = 1
+	gpu_id =2 
 	gen = Generator(scoring)
 	dis = Discriminator()
 	if init:
@@ -214,11 +203,12 @@ if __name__ == '__main__':
 	Seq = di.loadSequence('test')
 	trainDataset = NYUDataset([Seq])
 	X_train, Y_train = trainDataset.imgStackDepthOnly('test')
+	use_gpu = 1
 	if use_gpu:
 		xp = cuda.cupy
 	else:
 		xp = np
-
+	#xp = np
 	Y_train = xp.reshape(Y_train, (Y_train.shape[0], Y_train.shape[1]* Y_train.shape[2]))
 	Nval = 10000
 	x_train, x_val, y_train, y_val = train_test_split(X_train, Y_train, test_size = 0.2)
@@ -236,62 +226,71 @@ if __name__ == '__main__':
 	o_gen.add_hook(chainer.optimizer.WeightDecay(C))
 	o_dis.add_hook(chainer.optimizer.WeightDecay(C))
 	
+	gen.to_gpu(gpu_id)
+	dis.to_gpu(gpu_id)
 	gen_loss_list=[]
 	dis_loss_list=[]
 	obj_val = xp.zeros((Nepoch))
 	
 	z_monitor_all_val = xp.asarray(np.random.uniform(-1.0, 1.0,
-						(Nval, n_per_sample_val, nrand)).astype(np.float32))
+						(Nval, n_per_sample_val, nrand)).astype(xp.float32))
+	epoch = 0
+	with cupy.cuda.Device(gpu_id):
+		while True:
+			sum_dis_loss = xp.float32(0)
+			sum_gen_loss = xp.float32(0)
+			#xp.random.shuffle(train_data)
+			for i in range(0, N, batchsize):
+				#input_image = chainer.Variable(xp.asarray(x_train[i:i+batchsize]).astype(xp.float32))
+				input_image = xp.asarray(x_train[i:i+batchsize]).astype(xp.float32)
+				#input_image.to_gpu(gpu_id)
+				n = input_image.shape[0]
+				z = xp.asarray(np.random.uniform(-1,1, (n, nrand)).astype(xp.float32))
+				#z = Variable(xp.random.uniform(-1, 1, (n, nrand)).astype(xp.float32))
+				#z.to_gpu(gpu_id)
+				x = gen(input_image, z)
+				#x = xp.asarray(x).astype(xp.float32)
+				yl = dis(input_image, x)
+				d = yl.data
+				
+				L_gen = F.sigmoid_cross_entropy(yl, Variable(xp.zeros((n,1)).astype(xp.int32)))
+		#		print "L_gen",  L_gen.data
+				L_dis = F.sigmoid_cross_entropy(yl, Variable(xp.ones((n,1)).astype(xp.int32)))
+		#		print "L_dis", L_dis.data
+				#true_pose = chainer.Variable(xp.asarray(y_train[i:i+batchsize]).astype(xp.float32)) 
+				true_pose = y_train[i:i+batchsize]
+				true_pose = xp.reshape(true_pose, (true_pose.shape[0], 3 * J))                    
+				true_pose = Variable(xp.asarray(true_pose).astype(xp.float32))			
+				yl2 = dis(input_image, true_pose)
+				
 
-	for epoch in range(Nepoch):
-		sum_dis_loss = xp.float32(0)
-		sum_gen_loss = xp.float32(0)
-		#xp.random.shuffle(train_data)
-		for i in range(0, N, batchsize):
-			#input_image = chainer.Variable(xp.asarray(x_train[i:i+batchsize]).astype(xp.float32))
-			input_image = x_train[i:i+batchsize]
-			n = input_image.shape[0]
-			
-			z = Variable(xp.random.uniform(-1, 1, (n, nrand)).astype(xp.float32))
-			
-			x = gen(input_image, z)
-			yl = dis(input_image, x)
-            		d = yl.data
-            
-			L_gen = F.sigmoid_cross_entropy(yl, Variable(np.zeros((n,1)).astype(np.int32)))
-			print "L_gen",  L_gen.data
-			L_dis = F.sigmoid_cross_entropy(yl, Variable(np.ones((n,1)).astype(np.int32)))
-			print "L_dis", L_dis.data
-			#true_pose = chainer.Variable(xp.asarray(y_train[i:i+batchsize]).astype(xp.float32)) 
-			true_pose = y_train[i:i+batchsize]
-			true_pose = xp.reshape(true_pose, (true_pose.shape[0], 3 * J))                    
-			true_pose = Variable(xp.asarray(true_pose).astype(xp.float32))			
-			yl2 = dis(input_image, true_pose)
-			
+				L_dis = F.sigmoid_cross_entropy(yl2, Variable(xp.zeros((n,1)).astype(xp.int32)))
+				o_gen.zero_grads()
+				L_gen.backward()
+				o_gen.update()
+				
+				#L_dis.zerograd()
+				#o_dis.cleargrad()
+				o_dis.zero_grads()
+				L_dis.backward()
+				o_dis.update()
+				#print "grad:", min(L_gen.grad), max(L_gen.grad)         
+				curr_batch_gen_loss = L_gen.data 
+				sum_gen_loss += curr_batch_gen_loss
+				curr_batch_dis_loss = L_dis.data
+				sum_dis_loss += curr_batch_dis_loss 
 
-			L_dis = F.sigmoid_cross_entropy(yl2, Variable(np.zeros((n,1)).astype(np.int32)))
-			o_gen.zero_grads()
-			L_gen.backward()
-			o_gen.update()
-			
-			#L_dis.zerograd()
-			#o_dis.cleargrad()
-			o_dis.zero_grads()
-			L_dis.backward()
-			o_dis.update()
-			#print "grad:", min(L_gen.grad), max(L_gen.grad)         
-			curr_batch_gen_loss = L_gen.data 
-			sum_gen_loss += curr_batch_gen_loss
-			curr_batch_dis_loss = L_dis.data
-			sum_dis_loss += curr_batch_dis_loss 
-
-			gen_loss_list.append(curr_batch_gen_loss/n)
-			dis_loss_list.append(curr_batch_dis_loss/n)
-			print "L_gen", L_gen.data
-			print "L_dis", L_dis.data
-		
+				gen_loss_list.append(curr_batch_gen_loss/n)
+				dis_loss_list.append(curr_batch_dis_loss/n)
+				#print "L_gen", L_gen.data
+				#print "L_dis", L_dis.data
+				
 			obj_val[epoch] = objective_function(gen, x_val, y_val, n_per_sample_val, z_monitor_all_val)
 			print "obj val", obj_val[epoch]
+				
+			epoch += 1
+			if epoch == Nepoch:
+				break
 			#print curr_batch_gen_loss
 			#print curr_batch_dis_loss
 	print 'epoch end', epoch, sum_gen_loss/N, sum_dis_loss/N
