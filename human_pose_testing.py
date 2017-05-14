@@ -16,7 +16,12 @@ from dataloader import JointPositionExtractor, dataloader
 import scipy
 from data.dataset import NYUDataset
 from data.importers import NYUImporter
-
+from sklearn.model_selection import train_test_split
+from GAN_human  import Generator 
+GAN = 1
+max_y = 0
+mode = 0
+#np.set_printoptions(threshold='nan')
 N_sampling = 100
 nrand =200
 gpu_id = 3
@@ -48,7 +53,7 @@ def max_euclidian_joints(Z):
 	norm = F.max(norm, axis =-1) 
 	return norm.data
 
-def number_frames_within_dist(Z, dist = 160):
+def number_frames_within_dist(Z, dist = 150):
 
 	norm = F.basic_math.absolute(Z)
 	norm = F.basic_math.pow(norm,2.0)
@@ -128,9 +133,14 @@ def values_in_mm(evaluator):
 	joints_max = xp.reshape(evaluator.poses_max, (evaluator.poses_max.shape[0],J,3))
 	joints_ff = xp.reshape(evaluator.poses_ff, (evaluator.poses_ff.shape[0], J,3))
 	
+	#joints_me[:,:,2] = 0
+	#joints_max[:,:,2] = 0
+	#joints_ff[:,:,2] = 0
+	
 	gt = xp.asarray(evaluator.y).astype('float32')
 	gt = xp.reshape(gt, (gt.shape[0], J, 3))
-	print gt.shape, joints_me.shape
+	#gt[:,:,2] =0
+	#print gt.shape, joints_me.shape
 	vector_me = chainer.Variable((joints_me - gt).astype('float32'))
 	vector_max = chainer.Variable((joints_max - gt).astype('float32'))
 	vector_ff = chainer.Variable((joints_ff - gt).astype('float32'))
@@ -159,6 +169,7 @@ class Evaluator():
 		d = self.y.shape[1]
 		predictions = xp.zeros((n,N_sampling, d)).astype('float32')
 		mean_predictions = xp.zeros((n, d)).astype('float32')
+
 	#	print self.x.shape
 		for i in range(n):
 			
@@ -167,10 +178,15 @@ class Evaluator():
 			# Generate N_sampling poses for a depth image
 			predictions_i = xp.asarray(xp.zeros((N_sampling, d))).astype('float32')
 	#		print x_i.ndim
-			x = x_i #chainer.Variable(x_i.astype('float32')) 
+			x=x_i
+			#x = chainer.Variable(x_i.astype('float32')) 
+			#print x.shape
+			#print "x", x[:,:,20,20]
 			image_features = self.model.fast_sample_depth_image(x)
+			#print image_features.data
 			image_features_all = chainer.Variable(xp.asarray(xp.tile(image_features.data, \
 						(N_sampling,1)).astype('float32')))
+			#print image_features_all.data
 			z_all = chainer.Variable(xp.asarray(np.random.uniform(-1, 1,(N_sampling, self.model.nrand)).astype(np.float32)))
 			predictions_i = self.model.fast_sample(z_all, image_features_all)
 
@@ -179,21 +195,29 @@ class Evaluator():
 			predictions_i = xp.reshape(predictions_i.data,(N_sampling, J, 3))
 	 
 			predictions_i = xp.reshape(predictions_i, ((N_sampling, J * 3)))
-			#print "pr ", predictions_i
+			predictions_i *= max_y
 			#predictions_i = self.loader.jointsImgTo3D(predictions_i)
 			#print "pr2 ", predictions_i
 			#print "pred", predictions_i
+			
 			#print "y", self.y[i]
 			#torso = predictions_i[:, 6]
 		#	print torso.shape, predictions_i[:,::3].shape
-			#predictions_i[:,::3] *= 640/128
-			#Xpredictions_i[:,1::3] *= 480/128
+			predictions_i[:,::3] *= 640/128
+			predictions_i[:,1::3] *= 480/128
+			
+			predictions_i = self.loader.jointsImgTo3D(predictions_i)
+			
+			#print "pr ", predictions_i[0,:]
+			
 			#for j in range(N_sampling):
 			#	predictions_i[j,::3]  -= 150 - torso[j]
 			#print predictions_i.shape
 			#print predictions.shape
 			predictions[i, :, :] = xp.asarray(predictions_i)
 			mean_predictions[i,:] = xp.asarray(xp.mean(predictions_i, axis = 0))
+		#predictions /= 1000
+		#print predictions[:,1,1]
 		self.predictions = chainer.Variable(predictions.astype('float32'))
 		self.predicted_poses = predictions
 		self.poses = mean_predictions
@@ -274,57 +298,6 @@ class Evaluator():
 
 """
 
-	def generate_N_samples_old(self, N_sampling, image_list):
-		#print type(image_list)
-		N = image_list.shape[0]
-		for j in range(N):
-			image = image_list[j]
-			image = xp.reshape(image, (1, 1, 128, 128))
-			for i in range(N_sampling):
-				predictions_i = []
-				image_features = self.model.fast_sample_depth_image(image)
-				
-				image_features_all = image_features.data
-				#print self.z_all[i].shape
-				predictions_i.append(self.model.fast_sample(self.z_all[i], image_features_all))
-			self.predictions.append(predictions_i)
-	
-	def MEU(self,, J, score):
-		n_predictions = self.predictions.shape[0]
-		d = self.predictions.shape[1]
-		
-		predictions_3d_matrix = xp.repeat(predictions,n_predictions,axis=0).astype(np.float32)
-		predictions_3d_matrix = predictions_3d_matrix.reshape(n_predictions,n_predictions,d)
-		
-		Z = predictions_3d_matrix - predictions
-		Z_flatten = chainer.Variable(Z)
-		Z = F.reshape(Z_flatten, (Z_flatten.data.shape[:-1] + (J, 3)))
-		
-		mean_per_joint_error_loss_matrix = xp.sum(euclidian_joints(Z), axis = -1) / J
-		mean_error_loss_matrix = euclidian_joints(Z_flatten) / (3*J)
-		max_error_loss_matrix = max_euclidian_joints(Z)
-		training_scoring_matrix = score.bnorm(Z_flatten).data
-		fraction_frame_loss_matrix = number_frames_within_dist(Z)
-
-		MEU_vector_scoring = xp.sum(training_scoring_matrix, axis = 1)
-		MEU_vector_me_per_joint = xp.sum(mean_per_joint_error_loss_matrix, axis = 1)
-		MEU_vector_max = xp.sum(max_error_loss_matrix, axis = 1)
-		MEU_vector_me = xp.sum(mean_error_loss_matrix, axis = 1)
-
-		y_me_per_joint = xp.argmin(MEU_vector_me_per_joint)
-		y_me = xp.argmin(MEU_vector_me)
-		y_max = xp.argmin(MEU_vector_max)
-		y_ff = xp.argmax(fraction_frame_loss_matrix)
-		y_scoring = xp.argmin(MEU_vector_scoring)
-
-		return y_me_per_joint, y_max, y_ff, y_scoring, y_mean
-	
-	def MeJEE(N_sampling, N, true_joints):
-		true_joints = self.model.jointsImgTo3D(true_joints)
-		self.samples = self.model.jointsImgTo3D(self.samples)
-		for j in range(N):
-			for i in range(N_sampling):
-				Z = uvd_to_mm(self.samples
 """
 			
 
@@ -347,9 +320,13 @@ def evaluate(results_dir, beta, seed, alpha, C, cov, MEU, random,  nrand, X_test
 	
 
 	scoring = Score(beta, alpha, N_sampling)
-	model = JointPositionExtractor(scoring, nrand, J) 
-	
-	serializers.load_npz('HumanTryRelease/model_end.model', model)
+	if mode == GAN:
+		model = Generator(scoring)
+		serializers.load_npz('HumanTryRelease/generator_human.model', model)
+	else:
+		model = JointPositionExtractor(scoring, nrand, J) 
+		
+		serializers.load_npz('HumanTryRelease/model_end.model', model)
 	if use_gpu:
 		model.to_gpu(gpu_id)
 	
@@ -357,7 +334,7 @@ def evaluate(results_dir, beta, seed, alpha, C, cov, MEU, random,  nrand, X_test
 	with cupy.cuda.Device(gpu_id):
 		start = 0
 		end = 0
-		batchsize = 1000
+		batchsize = 100
 		while True:
 			start = end
 			end = min([start + batchsize, N])
@@ -366,11 +343,16 @@ def evaluate(results_dir, beta, seed, alpha, C, cov, MEU, random,  nrand, X_test
 
 			x_test = xp.asarray(X_test[indexes,:,:,:]).astype(xp.float32)
 			y_test = xp.asarray(Y_test[indexes]).astype(xp.float32)
+
+			#print x_test[1,:,10,10], x_test[15,:,10,10]
 			#x_test = chainer.Variable(xp.asarray(x_test).astype(xp.float32))
 			#y_test = chainer.Variable(xp.asarray(y_test).astype(xp.float32))
 			
-			print("Generating samples")		
+			#print("Generating samples")		
 			evaluator = Evaluator( model, x_test, y_test, scoring, loader)					
+			
+			#x_test = chainer.Variable(xp.asarray(x_test).astype(xp.float32))
+	
 			evaluator.generate_N_samples(N_sampling) # Generate predictions, already denormed
 			
 			
@@ -378,14 +360,14 @@ def evaluate(results_dir, beta, seed, alpha, C, cov, MEU, random,  nrand, X_test
 			l1, l2 = evaluator.compute_Losses_samples() 
 			probloss[start:end] = l1 
 			sqrt_euc[start:end] = l2 
-			print ("\n probloss :", l1, "\n sqrt_euc :" , l2)
+			#print ("\n probloss :", l1, "\n sqrt_euc :" , l2)
 
 			#print("Computing NON Probabilistic metrics")	
 			evaluator.get_point_estimates_3M(MEU, random) # generate point estimates
 			l1, l2 = evaluator.compute_Losses_PE() 
 			probloss_PE[start:end] = l1 
 			sqrt_euc_PE[start:end] = l2 
-			print ("\n probloss_PE: ", l1, "\n sqrt_eucl_PE: ", l2)
+			#print ("\n probloss_PE: ", l1, "\n sqrt_eucl_PE: ", l2)
 				
 			#print("Computing Errors")	
 			m1,m2,m3 = values_in_mm(evaluator)
@@ -394,7 +376,7 @@ def evaluate(results_dir, beta, seed, alpha, C, cov, MEU, random,  nrand, X_test
 			euclidian_distance[start:end, :] = m1
 			max_euclidian_distance[start:end] = m2 
 			fraction_frame += m3 / float(N) 
-			print ("\n euclidian distance:", m1, "\n max_euclidian_distance", m2)
+			#print ("\n euclidian distance:", m1, "\n max_euclidian_distance", m2)
 			#if (alpha == 0.0):
 			#	print("Computing FF curves")	
 		#		line_bi = compute_ff_line_PE(evaluator_PE.predicted_poses, sub_gt3D_array, 14, distances)
@@ -426,24 +408,38 @@ if __name__ == '__main__':
 	else:
 		xp = np
 	J = 15
-	loader = dataloader('data/Subject1_rgbd_images/taking_food/')
+	loader = dataloader('data/Subject1_rgbd_images/')
 	loader.load_images()
 
 	loader.load_joints()
 	loader.uvd_joints = loader.joints_to_uvd()
 	loader.cut()
-	X_test = xp.asarray(loader.images)
-	X_test = xp.reshape(X_test, (X_test.shape[0],1, X_test.shape[1], X_test.shape[2]))
+	X_test = np.asarray(loader.images)
+	X_test /= np.max(X_test)
+	X_test = np.reshape(X_test, (X_test.shape[0],1, X_test.shape[1], X_test.shape[2]))
 	Y_test = xp.asarray(loader.uvd_joints)
+	max_y = np.max(Y_test)
+	#Y_test = xp.asarray(loader.joints)
+	#Y_test /= np.max(Y_test)
+	Y_test[:,::3] *= 640/128
+	Y_test[:,1::3] *= 480/128
+	Y_test = loader.jointsImgTo3D(Y_test)
+	#Y_test /= 1000
+
 	
+	tmp1, x_test, tmp2, y_test = train_test_split(X_test, Y_test, random_state = 42) 
+	X_test, Y_test = x_test, y_test
+	print X_test.shape, Y_test.shape
+	print np.allclose(X_test[1,:,:,:], X_test[20,:,:,:])
 	N = X_test.shape[0]#	
 	np.random.seed(0)
 	beta = 1.0
 	seed = 0
-	alpha =0.5
+	alpha =0#0.5
+
 	C = 1e-3
-	nrand = 200
-	results_dir = 'TryRelease/'
+	nrand = 0 #200
+	results_dir = 'HumanTryRelease/'
 	cov = 5
 	MEU = True
 	N_sampling =100

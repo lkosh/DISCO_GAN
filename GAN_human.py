@@ -29,8 +29,8 @@ import cupy
 from scores import *
 from sklearn.cross_validation import train_test_split
 from hand_pose import JointPositionExtractor 
-
-J =14
+from dataloader import dataloader
+J =15
 n_conv = 5
 n_filters = 8
 n_pool = 3
@@ -63,8 +63,8 @@ def objective_function(model, x_val, y_val, n_per_sample_val, z_monitor_objectiv
 		
 		#ex = model.fast_sample_depth_image(x)
 		z = chainer.Variable(xp.asarray(z_monitor_objective_all_val[start:end, 0, :]))
-		print z.shape
-		print z_monitor_objective_all_val.shape
+		#print z.shape
+		#print z_monitor_objective_all_val.shape
 		pred = model(x,z)
 		pred = F.expand_dims(pred, axis = 1)
 		preds = F.concat((pred,))
@@ -134,7 +134,7 @@ class Generator(chainer.Chain):
 		image_features = xp.array(h_image.data)
 		#i_d = xp.array(image_features.data)
 		#h = Variable(np.concatenate((h_image.data, prediction.data), axis = 1))
-		print image_features.shape, d.shape
+		#print image_features.shape, d.shape
 		h = F.concat((image_features, d), axis = 1)
 		#h = h_image
 		#h = F.concat((z,image_features), axis = 1)
@@ -147,9 +147,9 @@ class Generator(chainer.Chain):
 		
 		return h
         
-	def fast_sample_depth_image(self, x):
+    def fast_sample_depth_image(self, x):
 		#x = chainer.Variable(xp.asarray(x).astype(xp.float32))
-
+		#print type(x)
 	#	print type(x.data[0])
 		h_image = F.max_pooling_2d(F.relu(self.conv0(x.data)), ksize = n_pool)
 		
@@ -158,7 +158,7 @@ class Generator(chainer.Chain):
 		h_image = F.relu(self.conv2(h_image))
 		h_image = F.reshape(h_image, (h_image.data.shape[0], size_out_1*size_out_2*n_filters))
 		return h_image
-	def fast_sample(self, z, image_features, test=False):
+    def fast_sample(self, z, image_features, test=False):
 		h = F.concat((image_features, z), axis = 1)
 		#h = h_image
 		#h = F.concat((z,image_features), axis = 1)
@@ -231,12 +231,12 @@ if __name__ == '__main__':
 	scoring = Score(beta, alpha, n_per_sample_val)
 	init = 1
 	fixed = 1
-	gpu_id =3 
+	gpu_id =2
 	gen = Generator(scoring)
 	dis = Discriminator()
 	if init:
 		model = JointPositionExtractor(scoring, nrand, J)
-		serializers.load_npz('TryRelease/model_400.model', model)
+		serializers.load_npz('HumanTryRelease/model_end.model', model)
 		gen.conv0 = model.conv0
 		gen.conv1 = model.conv1
 		gen.conv2 = model.conv2
@@ -247,24 +247,47 @@ if __name__ == '__main__':
 	#loss = Score(beta, alpha, n_per_sample)
 	
 
-	#n_per_sample = 2
-	di = NYUImporter('../../DeepPrior/data/NYU')
-
-	Seq = di.loadSequence('train')
-	trainDataset = NYUDataset([Seq])
-	X_train, Y_train = trainDataset.imgStackDepthOnly('train')
+	loader = dataloader('data/Subject1_rgbd_images/')
+	loader.load_images()
+	
+	loader.load_joints()
+	#print loader.joints.shape
 	use_gpu = 1
 	if use_gpu:
 		xp = cuda.cupy
 	else:
 		xp = np
 	#xp = np
-	Y_train = xp.reshape(Y_train, (Y_train.shape[0], Y_train.shape[1]* Y_train.shape[2]))
-	Nval = 10000
-	x_train, x_val, y_train, y_val = train_test_split(X_train, Y_train, test_size = Nval)
-	print x_train.shape	
-	N,tmp,h,w = x_train.shape
-	#Create random noise to evaluate current objective function
+	loader.uvd_joints = loader.joints_to_uvd()
+	loader.cut()
+
+#	with cupy.cuda.Device(gpu_id):
+	X_train = np.asarray(loader.images)
+	X_train = X_train/np.max(X_train)
+	X_train = np.reshape(X_train, (X_train.shape[0],1, X_train.shape[1], X_train.shape[2]))
+	Y_train = xp.asarray(loader.uvd_joints)
+	Y_train = Y_train/np.max(Y_train)
+	x_train, tmp1, y_train, tmp2 = train_test_split(X_train, Y_train, random_state = 42) 
+	X_train, Y_train = x_train, y_train
+
+	
+	np.random.seed(0)
+	# shuffle the training samples
+	indexes = np.arange(X_train.shape[0])
+	np.random.shuffle(indexes)
+
+	Nval = 100
+
+	#Nval = 100 # save 10000 for validation set
+	indexes_val = indexes[:Nval]
+	indexes_train = indexes[Nval:]
+	#with cuda.Device(gpu_id):
+	x_val = xp.asarray(X_train[indexes_val,:,:,:]).astype(xp.float32)
+	y_val = xp.asarray(Y_train[indexes_val,:]).astype(xp.float32)
+	x_train = X_train[indexes_train,:,:,:]
+	y_train = Y_train[indexes_train,:]
+
+	N = x_train.shape[0]
 	
 	np.random.seed(0)
 	o_gen = optimizers.MomentumSGD(lr=0.01, momentum=0.9)
@@ -355,8 +378,8 @@ if __name__ == '__main__':
 			#print curr_batch_gen_loss
 			#print curr_batch_dis_loss
 	print 'epoch end', epoch, sum_gen_loss/N, sum_dis_loss/N
-	savedir = "TryRelease"	
-	serializers.save_npz(savedir + '/generator.model', gen)
+	savedir = "HumanTryRelease"	
+	serializers.save_npz(savedir + '/generator_human.model', gen)
 
 	np.savetxt(savedir + '/MER_val_GAN', [obj_val])
 
